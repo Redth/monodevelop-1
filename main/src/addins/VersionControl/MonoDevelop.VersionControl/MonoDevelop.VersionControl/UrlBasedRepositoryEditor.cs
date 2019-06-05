@@ -129,7 +129,7 @@ namespace MonoDevelop.VersionControl
 				updating = false;
 			}
 		}
-		
+                
 		void UpdateUrl ()
 		{
 			updating = true;
