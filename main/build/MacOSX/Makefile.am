@@ -33,7 +33,7 @@ render.exe: render.cs
 	mcs -r:System.Drawing render.cs
 
 dmg: render.exe app
-	./make-dmg-bundle.sh
+	sh -x ./make-dmg-bundle.sh
 
 monostub.o: monostub.mm $(MONOSTUB_EXTRA_SOURCEFILES)
 	g++ -g $(HYBRID_SUSPEND_ABORT) -c -Wall -m$(MONOSTUB_ARCH) -o $@ monostub.mm

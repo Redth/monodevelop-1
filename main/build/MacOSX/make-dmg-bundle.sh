@@ -41,10 +41,10 @@ image_size=$(du -ck "$DMG_APP" | tail -n1 | cut -f1)
 image_size=$((($image_size *2) / 1000))
 
 echo "Creating disk image (${image_size}MB)..."
-hdiutil create "$DMG_FILE" -megabytes $image_size -volname "$VOLUME_NAME" -fs HFS+ -quiet || exit $?
+hdiutil create "$DMG_FILE" -megabytes $image_size -volname "$VOLUME_NAME" -fs HFS+ || exit $?
 
 echo "Attaching to disk image..."
-hdiutil attach "$DMG_FILE" -readwrite -noautoopen -mountpoint "$MOUNT_POINT" -quiet || exit $?
+hdiutil attach "$DMG_FILE" -readwrite -noautoopen -mountpoint "$MOUNT_POINT" || exit $?
 
 echo "Populating image..."
 
@@ -83,9 +83,9 @@ do
 		echo "$MOUNT_POINT already detached, so not retrying"
 		break
 	fi
-	hdiutil detach "$MOUNT_POINT" && break
+	hdiutil detach "$MOUNT_POINT" -verbose && break
 	if [ $n = 5 ]; then
-		hdiutil detach -force "$MOUNT_POINT"
+		hdiutil detach -force -verbose"$MOUNT_POINT"
 		exit $?
 	fi
 done
@@ -93,7 +93,7 @@ done
 mv "$DMG_FILE" "$DMG_FILE.master"
 
 echo "Creating distributable image..."
-hdiutil convert -format UDBZ -o "$DMG_FILE" "$DMG_FILE.master" || exit $?
+hdiutil convert -format UDBZ -o "$DMG_FILE" "$DMG_FILE.master" -verbose || exit $?
 
 echo "Built disk image $DMG_FILE"
 
