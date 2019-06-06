@@ -67,8 +67,7 @@ namespace MonoDevelop.VersionControl.Git
 
 				rootRepository = value;
 
-				InitScheduler (); 
-                if (this.watchGitLockfiles)
+				if (this.watchGitLockfiles)
 					InitFileWatcher (false);
 			}
 		}
@@ -77,9 +76,7 @@ namespace MonoDevelop.VersionControl.Git
 
 
 		FileSystemWatcher watcher;
-		ConcurrentExclusiveSchedulerPair scheduler;
-		TaskFactory blockingOperationFactory;
-		TaskFactory readingOperationFactory;
+
 		readonly bool watchGitLockfiles;
 
 		public GitRepository ()
@@ -101,26 +98,6 @@ namespace MonoDevelop.VersionControl.Git
 		public GitRepository (VersionControlSystem vcs, FilePath path, string url) : this (vcs, path, url, true)
 		{
 
-		}
-
-		void InitScheduler ()
-		{
-			if (scheduler == null) {
-				scheduler = new ConcurrentExclusiveSchedulerPair ();
-				blockingOperationFactory = new TaskFactory (default, TaskCreationOptions.PreferFairness, TaskContinuationOptions.PreferFairness, scheduler.ExclusiveScheduler);
-				readingOperationFactory = new TaskFactory (default, TaskCreationOptions.PreferFairness, TaskContinuationOptions.PreferFairness, scheduler.ConcurrentScheduler);
-			}
-		}
-
-		void ShutdownScheduler ()
-		{
-			if (scheduler != null) {
-				scheduler.Complete ();
-				scheduler.Completion.Wait ();
-				scheduler = null;
-				readingOperationFactory = null;
-				blockingOperationFactory = null;
-			}
 		}
 
 		void InitFileWatcher (bool throwIfIndexMissing = true)
@@ -183,7 +160,7 @@ namespace MonoDevelop.VersionControl.Git
 		{
 			FileService.ThawEvents ();
 		}
-		
+
 		protected override void Dispose (bool disposing)
 		{
 			// ensure that no new operations can be started while we wait for the scheduler to shutdown
@@ -191,7 +168,6 @@ namespace MonoDevelop.VersionControl.Git
 
 			if (disposing) {
 				ShutdownFileWatcher ();
-				ShutdownScheduler ();
 			}
 
 			// now it's safe to dispose the base and release all information caches
@@ -205,8 +181,8 @@ namespace MonoDevelop.VersionControl.Git
 			}
 
 			scheduler = null;
-			readingOperationFactory = null;
-			blockingOperationFactory = null;
+			ReadingOperationFactory = null;
+			BlockingOperationFactory = null;
 			watcher = null;
 			rootRepository = null;
 			cachedSubmodules = null;
@@ -458,8 +434,7 @@ namespace MonoDevelop.VersionControl.Git
 		void EnsureInitialized ()
 		{
 			if (IsDisposed)
-				throw new ObjectDisposedException (typeof(GitRepository).Name);
-			InitScheduler ();
+				throw new ObjectDisposedException (typeof (GitRepository).Name);
 			if (RootRepository != null)
 				InitFileWatcher ();
 		}
@@ -481,7 +456,7 @@ namespace MonoDevelop.VersionControl.Git
 			EnsureInitialized ();
 			if (hasUICallbacks)
 				EnsureBackgroundThread ();
-			readingOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
+			ConcurrentOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
 		}
 
 		internal void RunOperation (Action action, bool hasUICallbacks = false)
@@ -489,7 +464,7 @@ namespace MonoDevelop.VersionControl.Git
 			EnsureInitialized ();
 			if (hasUICallbacks)
 				EnsureBackgroundThread ();
-			readingOperationFactory.StartNew (action).RunWaitAndCapture ();
+			ConcurrentOperationFactory.StartNew (action).RunWaitAndCapture ();
 		}
 
 		internal Task RunOperationAsync (Action action, bool hasUICallbacks = false)
@@ -497,7 +472,7 @@ namespace MonoDevelop.VersionControl.Git
 			EnsureInitialized ();
 			if (hasUICallbacks)
 				EnsureBackgroundThread ();
-			return readingOperationFactory.StartNew (action);
+			return ConcurrentOperationFactory.StartNew (action);
 		}
 
 		internal T RunOperation<T> (Func<T> action, bool hasUICallbacks = false)
@@ -505,7 +480,7 @@ namespace MonoDevelop.VersionControl.Git
 			EnsureInitialized ();
 			if (hasUICallbacks)
 				EnsureBackgroundThread ();
-			return readingOperationFactory.StartNew (action).RunWaitAndCapture ();
+			return ConcurrentOperationFactory.StartNew (action).RunWaitAndCapture ();
 		}
 
 		internal Task<T> RunOperationAsync<T> (Func<T> action, bool hasUICallbacks = false, CancellationToken cancellationToken = default)
@@ -513,7 +488,7 @@ namespace MonoDevelop.VersionControl.Git
 			EnsureInitialized ();
 			if (hasUICallbacks)
 				EnsureBackgroundThread ();
-			return readingOperationFactory.StartNew (action, cancellationToken);
+			return ConcurrentOperationFactory.StartNew (action, cancellationToken);
 		}
 
 		internal T RunOperation<T> (FilePath localPath, Func<LibGit2Sharp.Repository, T> action, bool hasUICallbacks = false)
@@ -521,7 +496,7 @@ namespace MonoDevelop.VersionControl.Git
 			EnsureInitialized ();
 			if (hasUICallbacks)
 				EnsureBackgroundThread ();
-			return readingOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
+			return ConcurrentOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
 		}
 
 		internal Task<T> RunOperationAsync<T> (FilePath localPath, Func<LibGit2Sharp.Repository, T> action, bool hasUICallbacks = false, CancellationToken cancellationToken = default)
@@ -529,7 +504,7 @@ namespace MonoDevelop.VersionControl.Git
 			EnsureInitialized ();
 			if (hasUICallbacks)
 				EnsureBackgroundThread ();
-			return readingOperationFactory.StartNew (() => action (GetRepository (localPath)), cancellationToken);
+			return ConcurrentOperationFactory.StartNew (() => action (GetRepository (localPath)), cancellationToken);
 		}
 
 		internal void RunBlockingOperation (Action action, bool hasUICallbacks = false)
@@ -538,7 +513,7 @@ namespace MonoDevelop.VersionControl.Git
 				EnsureBackgroundThread ();
 			try {
 				FileService.FreezeEvents ();
-				blockingOperationFactory.StartNew (action).RunWaitAndCapture ();
+				ExclusiveOperationFactory.StartNew (action).RunWaitAndCapture ();
 			} finally {
 				FileService.ThawEvents ();
 			}
@@ -551,7 +526,7 @@ namespace MonoDevelop.VersionControl.Git
 				EnsureBackgroundThread ();
 			try {
 				FileService.FreezeEvents ();
-				blockingOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
+				ExclusiveOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
 			} finally {
 				FileService.ThawEvents ();
 			}
@@ -564,7 +539,7 @@ namespace MonoDevelop.VersionControl.Git
 				EnsureBackgroundThread ();
 			try {
 				FileService.FreezeEvents ();
-				return blockingOperationFactory.StartNew (action).RunWaitAndCapture ();
+				return ExclusiveOperationFactory.StartNew (action).RunWaitAndCapture ();
 			} finally {
 				FileService.ThawEvents ();
 			}
@@ -577,7 +552,7 @@ namespace MonoDevelop.VersionControl.Git
 				EnsureBackgroundThread ();
 			try {
 				FileService.FreezeEvents ();
-				return blockingOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
+				return ExclusiveOperationFactory.StartNew (() => action (GetRepository (localPath))).RunWaitAndCapture ();
 			} finally {
 				FileService.ThawEvents ();
 			}
@@ -750,7 +725,7 @@ namespace MonoDevelop.VersionControl.Git
 		{
 			var versions = new List<VersionInfo> ();
 
-			return readingOperationFactory.StartNew (() => {
+			return ConcurrentOperationFactory.StartNew (() => {
 				if (localFileNames != null) {
 					var localFiles = new List<FilePath> ();
 					var groups = GroupByRepository (localFileNames);
@@ -764,7 +739,7 @@ namespace MonoDevelop.VersionControl.Git
 						foreach (var p in group) {
 							if (Directory.Exists (p)) {
 								if (recursive)
-									versions.AddRange (GetDirectoryVersionInfo (p, getRemoteStatus, true));
+									versions.AddRange (GetDirectoryVersionInfoAsync (p, getRemoteStatus, true));
 								versions.Add (new VersionInfo (p, "", true, VersionStatus.Versioned, arev, VersionStatus.Versioned, null));
 							} else
 								localFiles.Add (p);
@@ -1052,7 +1027,7 @@ namespace MonoDevelop.VersionControl.Git
 			if ((options & GitUpdateOptions.SaveLocalChanges) != GitUpdateOptions.SaveLocalChanges) {
 				const VersionStatus unclean = VersionStatus.Modified | VersionStatus.ScheduledAdd | VersionStatus.ScheduledDelete;
 				bool modified = false;
-				if (GetDirectoryVersionInfo (RootPath, false, true).Any (v => (v.Status & unclean) != VersionStatus.Unversioned))
+				if (GetDirectoryVersionInfoAsync (RootPath, false, true).Any (v => (v.Status & unclean) != VersionStatus.Unversioned))
 					modified = true;
 
 				if (modified) {
@@ -1436,7 +1411,7 @@ namespace MonoDevelop.VersionControl.Git
 
 				foreach (var item in group)
 					if (item.IsDirectory) {
-						foreach (var vi in GetDirectoryVersionInfo (item, false, recurse))
+						foreach (var vi in GetDirectoryVersionInfoAsync (item, false, recurse))
 							if (!vi.IsDirectory) {
 								if (vi.Status == VersionStatus.Unversioned)
 									continue;
@@ -1530,7 +1505,7 @@ namespace MonoDevelop.VersionControl.Git
 			foreach (var path in localPaths) {
 				if (keepLocal) {
 					// Undo addition of directories and files.
-					foreach (var info in GetDirectoryVersionInfo (path, false, true)) {
+					foreach (var info in GetDirectoryVersionInfoAsync (path, false, true)) {
 						if (info != null && info.HasLocalChange (VersionStatus.ScheduledAdd)) {
 							// Revert addition.
 							await RevertAsync (path, true, monitor);
@@ -1990,7 +1965,7 @@ namespace MonoDevelop.VersionControl.Git
 
 		protected override async Task OnMoveDirectoryAsync (FilePath localSrcPath, FilePath localDestPath, bool force, ProgressMonitor monitor)
 		{
-			VersionInfo[] versionedFiles = GetDirectoryVersionInfo (localSrcPath, false, true);
+			VersionInfo[] versionedFiles = GetDirectoryVersionInfoAsync (localSrcPath, false, true);
 			await base.OnMoveDirectoryAsync (localSrcPath, localDestPath, force, monitor);
 			monitor.BeginTask (GettextCatalog.GetString ("Moving files"), versionedFiles.Length);
 			foreach (VersionInfo vif in versionedFiles) {
@@ -2126,7 +2101,7 @@ namespace MonoDevelop.VersionControl.Git
 			get {
 				if (shortName != null)
 					return shortName;
-				return shortName = rev.Length > 10 ? rev.Substring (0, 10) : rev; 
+				return shortName = rev.Length > 10 ? rev.Substring (0, 10) : rev;
 			}
 		}
 
