@@ -23,15 +23,17 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
+
 using System;
-using MonoDevelop.Core;
-using System.Collections.Generic;
 using System.IO;
-using System.Security.Cryptography;
 using System.Linq;
+using System.Buffers;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+
 using MonoDevelop.Ide;
+using MonoDevelop.Core;
 using MonoDevelop.Projects;
-using Mono.Debugging.Client;
 
 namespace MonoDevelop.Debugger
 {
@@ -120,49 +122,123 @@ namespace MonoDevelop.Debugger
 			return FilePath.Null;
 		}
 
-		public static bool CheckFileHash (FilePath file, byte[] hash)
+		static void ComputeHashes (Stream stream, HashAlgorithm hash, HashAlgorithm dos, HashAlgorithm unix)
 		{
-			if (hash == null)
-				return false;
-			if (File.Exists (file)) {
-				using (var fs = File.OpenRead (file)) {
-					// Roslyn SHA1 checksum always starts with 20
-					if (hash.Length > 0 && hash [0] == 20)
-						using (var sha1 = SHA1.Create ()) {
-							if (sha1.ComputeHash (fs).Take (15).SequenceEqual (hash.Skip (1))) {
-								return true;
-							}
+			var unixBuffer = ArrayPool<byte>.Shared.Rent (4096 + 1);
+			var dosBuffer = ArrayPool<byte>.Shared.Rent (8192 + 1);
+			var buffer = ArrayPool<byte>.Shared.Rent (4096);
+			byte pc = 0;
+			int count;
+
+			try {
+				while ((count = stream.Read (buffer, 0, buffer.Length)) > 0) {
+					int unixIndex = 0, dosIndex = 0;
+
+					for (int i = 0; i < count; i++) {
+						var c = buffer[i];
+
+						if (c == (byte) '\r') {
+							if (pc == (byte) '\r')
+								unixBuffer[unixIndex++] = pc;
+							dosBuffer[dosIndex++] = c;
+						} else if (c == (byte) '\n') {
+							if (pc != (byte) '\r')
+								dosBuffer[dosIndex++] = (byte) '\r';
+							unixBuffer[unixIndex++] = c;
+							dosBuffer[dosIndex++] = c;
+						} else {
+							if (pc == (byte) '\r')
+								unixBuffer[unixIndex++] = pc;
+							unixBuffer[unixIndex++] = c;
+							dosBuffer[dosIndex++] = c;
 						}
-					if (hash.Length > 0 && hash [0] == 32)
-						using (var sha1 = SHA256.Create ()) {
-							if (sha1.ComputeHash (fs).Take (15).SequenceEqual (hash.Skip (1))) {
-								return true;
-							}
-						}
-					if (hash.Length == 20) {
-						using (var sha1 = SHA1.Create ()) {
-							fs.Position = 0;
-							if (sha1.ComputeHash (fs).SequenceEqual (hash)) {
-								return true;
-							}
-						}
+
+						pc = c;
 					}
-					if (hash.Length == 32) {
-						using (var sha256 = SHA256.Create ()) {
-							fs.Position = 0;
-							if (sha256.ComputeHash (fs).SequenceEqual (hash)) {
-								return true;
-							}
+
+					hash.TransformBlock (buffer, 0, count, outputBuffer: null, outputOffset: 0);
+					dos.TransformBlock (dosBuffer, 0, dosIndex, outputBuffer: null, outputOffset: 0);
+					unix.TransformBlock (unixBuffer, 0, unixIndex, outputBuffer: null, outputOffset: 0);
+				}
+
+				hash.TransformFinalBlock (buffer, 0, 0);
+				dos.TransformFinalBlock (buffer, 0, 0);
+				unix.TransformFinalBlock (buffer, 0, 0);
+			} finally {
+				ArrayPool<byte>.Shared.Return (unixBuffer);
+				ArrayPool<byte>.Shared.Return (dosBuffer);
+				ArrayPool<byte>.Shared.Return (buffer);
+			}
+		}
+
+		static bool ChecksumsEqual (byte[] calculated, byte[] checksum, int skip = 0)
+		{
+			if (skip > 0) {
+				if (calculated.Length < checksum.Length - skip)
+					return false;
+			} else {
+				if (calculated.Length != checksum.Length)
+					return false;
+			}
+
+			for (int i = 0, csi = skip; csi < checksum.Length; i++, csi++) {
+				if (calculated[i] != checksum[csi])
+					return false;
+			}
+
+			return true;
+		}
+
+		static bool CheckHash (Stream stream, string algorithm, byte[] checksum)
+		{
+			using (var hash = HashAlgorithm.Create (algorithm)) {
+				int size = hash.HashSize / 8;
+
+				using (var dos = HashAlgorithm.Create (algorithm)) {
+					using (var unix = HashAlgorithm.Create (algorithm)) {
+						stream.Position = 0;
+
+						ComputeHashes (stream, hash, dos, unix);
+
+						if (checksum[0] == size && checksum.Length < size) {
+							return ChecksumsEqual (hash.Hash, checksum, 1) ||
+								ChecksumsEqual (unix.Hash, checksum, 1) ||
+								ChecksumsEqual (dos.Hash, checksum, 1);
 						}
-					}
-					fs.Position = 0;
-					using (var md5 = MD5.Create ()) {
-						if (md5.ComputeHash (fs).SequenceEqual (hash)) {
-							return true;
-						}
+
+						return ChecksumsEqual (hash.Hash, checksum) ||
+							ChecksumsEqual (unix.Hash, checksum) ||
+							ChecksumsEqual (dos.Hash, checksum);
 					}
 				}
 			}
+		}
+
+		public static bool CheckFileHash (FilePath path, byte[] checksum)
+		{
+			if (checksum == null || checksum.Length == 0 || !File.Exists (path))
+				return false;
+
+			using (var stream = File.OpenRead (path)) {
+				if (checksum.Length == 16) {
+					// Note: Roslyn SHA1 hashes are 16 bytes and start w/ 20
+					if (checksum[0] == 20 && CheckHash (stream, "SHA1", checksum))
+						return true;
+
+					// Note: Roslyn SHA256 hashes are 16 bytes and start w/ 32
+					if (checksum[0] == 32 && CheckHash (stream, "SHA256", checksum))
+						return true;
+
+					return CheckHash (stream, "MD5", checksum);
+				}
+
+				if (checksum.Length == 20)
+					return CheckHash (stream, "SHA1", checksum);
+
+				if (checksum.Length == 32)
+					return CheckHash (stream, "SHA256", checksum);
+			}
+
 			return false;
 		}
 
@@ -223,4 +299,3 @@ namespace MonoDevelop.Debugger
 		}
 	}
 }
-
