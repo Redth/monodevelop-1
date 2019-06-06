@@ -77,6 +77,12 @@ SetFile -a C "$MOUNT_POINT"
 echo "Detaching from disk image..."
 for n in `seq 1 5`
 do
+	# If the mount point is gone, detaching worked, even though it might
+	# have timed out
+	if test ! -f "$MOUNT_POINT"; then
+		echo "$MOUNT_POINT already detached, so not retrying"
+		break
+	fi
 	hdiutil detach "$MOUNT_POINT" && break
 	if [ $n = 5 ]; then
 		hdiutil detach -force "$MOUNT_POINT"
@@ -87,7 +93,7 @@ done
 mv "$DMG_FILE" "$DMG_FILE.master"
 
 echo "Creating distributable image..."
-hdiutil convert -quiet -format UDBZ -o "$DMG_FILE" "$DMG_FILE.master" || exit $?
+hdiutil convert -format UDBZ -o "$DMG_FILE" "$DMG_FILE.master" || exit $?
 
 echo "Built disk image $DMG_FILE"
 
